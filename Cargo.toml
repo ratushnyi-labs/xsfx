@@ -1,0 +1,32 @@
+[package]
+name = "xsfx"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A cli packer for executables that acts as UPX and is compatible with .NET assemblies"
+
+[[bin]]
+name = "xsfx"
+path = "src/bin/packer.rs"
+
+[[bin]]
+name = "stub"
+path = "src/bin/stub.rs"
+
+[features]
+# Use native liblzma via xz2 for better compression during packing.
+native-compress = ["xz2"]
+
+[dependencies]
+lzma-rs = "0.3"
+
+[dependencies.xz2]
+version = "0.1"
+optional = true
+
+[profile.release]
+opt-level = "z"        # Optimize for size ('s' is also possible)
+lto = true             # Enable Link Time Optimization
+codegen-units = 1      # Better optimization across crates
+panic = "abort"        # Removes unwinding code
+strip = true           # Removes debug symbols (nightly or Rust 1.76+)
