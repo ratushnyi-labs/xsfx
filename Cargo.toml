@@ -19,6 +19,7 @@ native-compress = ["xz2"]
 
 [dependencies]
 lzma-rs = "0.3"
+libc = "0.2"
 
 [dependencies.xz2]
 version = "0.1"
