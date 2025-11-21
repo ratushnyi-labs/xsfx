@@ -5,8 +5,6 @@ use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 use lzma_rs::xz_decompress;
 
@@ -125,10 +123,14 @@ fn exec_payload_tempfile(
     argv0: &std::path::Path,
 ) -> io::Result<i32> {
     let temp_file = TempFile::new(payload)?;
-    let status = Command::new(&temp_file.path)
-        .arg0(argv0)
-        .args(args)
-        .status()?;
+    let mut cmd = Command::new(&temp_file.path);
+    #[cfg(unix)]
+    {
+        // On Unix we can override argv[0] to match the original executable path
+        cmd.arg0(argv0);
+    }
+    // On non-Unix (e.g., Windows), arg0 is unavailable; use the default argv[0]
+    let status = cmd.args(args).status()?;
     Ok(status.code().unwrap_or(1))
 }
 
