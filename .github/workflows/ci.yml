@@ -25,27 +25,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build cross-compilation image
-        run: |
-          docker build \
-            --platform linux/amd64 \
-            --target cross \
-            -t xsfx-build \
-            .
-
       - name: Build all targets
-        run: |
-          MSYS_NO_PATHCONV=1 docker run --rm \
-            --platform linux/amd64 \
-            -v "$PWD":/project \
-            -w /project \
-            -e RUSTUP_HOME=/usr/local/rustup \
-            -e CARGO_HOME=/usr/local/cargo \
-            -e PROJECT_DIR=/project \
-            xsfx-build
+        run: ./build.sh
 
       - name: List artifacts
         run: ls -lh dist/
