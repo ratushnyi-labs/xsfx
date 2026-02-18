@@ -113,7 +113,7 @@ flowchart TD
   H -- Yes --> J[Seek to payload offset]
   J --> K[Decompress LZMA/XZ payload]
   K --> L{Platform?}
-  L -- Linux --> M[memfd_create + exec]
+  L -- Linux --> M[memfd_create + execveat]
   L -- Windows --> N[In-process PE load]
   L -- macOS --> O[NSObjectFileImage load]
   M --> P[Exit with payload exit code]
@@ -193,8 +193,12 @@ The stub MUST always use pure-Rust lzma-rs for decompression (zero native deps).
 
 ### BR-006: Linux In-Memory Execution
 
-On Linux, the stub MUST use `memfd_create` (MFD_CLOEXEC) for in-memory execution.
-No temp file fallback.
+On Linux, the stub MUST use `memfd_create` (MFD_CLOEXEC) to hold the
+decompressed payload, then execute it via `execveat(fd, "", argv, envp,
+AT_EMPTY_PATH)`. This replaces the current process entirely — the kernel
+sets up a fresh stack, auxiliary vector, and process image. No fork, no
+temp files. The fresh auxv is required for musl-linked payloads which use
+AT_BASE to determine their role (main program vs dynamic linker).
 
 ### BR-007: Reserved
 
@@ -230,10 +234,13 @@ file image, link module, look up `_main` symbol, and call it. No temp files.
 
 ### BR-013: Stub Size Budget
 
-All stub binaries MUST be < 100 KB after post-build compression. The build
+All stub binaries MUST be < 100 KB after post-build processing. The build
 pipeline uses nightly Rust with `-Z build-std=std,panic_abort` and
 `-Cpanic=immediate-abort` to minimize std footprint, followed by UPX `--best
---lzma` compression.
+--lzma` compression for supported targets. UPX is skipped for
+`*-linux-musl` stubs because UPX's in-process decompression (mmap MAP_FIXED
++ jump) preserves a stale AT_BASE in the auxiliary vector, causing musl's
+startup to misidentify the binary as a dynamic linker and exit 127.
 
 ### BR-014: Ultra Payload Compression
 

@@ -56,55 +56,62 @@ fn run_stub() -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn fd_to_proc_path(fd: i32) -> String {
-    let mut buf = *b"/proc/self/fd/0000000000";
-    let mut n = fd as u32;
-    let mut pos = buf.len();
-    loop {
-        pos -= 1;
-        buf[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
+fn write_memfd(data: &[u8]) -> io::Result<std::fs::File> {
+    use std::io::Write;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    let fd = unsafe {
+        let r = libc::syscall(
+            libc::SYS_memfd_create,
+            c"rsfx".as_ptr(),
+            libc::MFD_CLOEXEC,
+        );
+        if r < 0 {
+            return Err(io::Error::last_os_error());
         }
+        r as i32
+    };
+    let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
+    f.write_all(data)?;
+    if unsafe { libc::fchmod(f.as_raw_fd(), 0o700) } != 0 {
+        return Err(io::Error::last_os_error());
     }
-    let s = &buf[..14]; // "/proc/self/fd/"
-    let d = &buf[pos..];
-    let mut result = Vec::with_capacity(s.len() + d.len());
-    result.extend_from_slice(s);
-    result.extend_from_slice(d);
-    unsafe { String::from_utf8_unchecked(result) }
+    Ok(f)
 }
 
 #[cfg(target_os = "linux")]
 fn exec_payload(payload: &[u8], args: &[String], argv0: &Path) -> io::Result<i32> {
     use std::ffi::CString;
-    use std::io::Write;
-    use std::os::unix::io::FromRawFd;
-    use std::os::unix::process::CommandExt;
-    use std::process::Command;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
 
-    let fd = unsafe {
-        let name = CString::new("rsfx-payload").expect("memfd name");
-        let res = libc::syscall(libc::SYS_memfd_create, name.as_ptr(), libc::MFD_CLOEXEC);
-        if res < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        res as i32
-    };
+    extern "C" { static environ: *const *const libc::c_char; }
 
-    let mut memfd = unsafe { std::fs::File::from_raw_fd(fd) };
-    memfd.write_all(payload)?;
-    memfd.flush()?;
-
-    let chmod_res = unsafe { libc::fchmod(fd, 0o700) };
-    if chmod_res != 0 {
-        return Err(io::Error::last_os_error());
+    let memfd = write_memfd(payload)?;
+    let c_argv0 = CString::new(argv0.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let c_args: Vec<CString> = args
+        .iter()
+        .map(|a| CString::new(a.as_bytes()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let mut argv: Vec<*const libc::c_char> = Vec::with_capacity(args.len() + 2);
+    argv.push(c_argv0.as_ptr());
+    for a in &c_args {
+        argv.push(a.as_ptr());
     }
-
-    let fd_path = fd_to_proc_path(fd);
-    let status = Command::new(&fd_path).arg0(argv0).args(args).status()?;
-    Ok(status.code().unwrap_or(1))
+    argv.push(std::ptr::null());
+    unsafe {
+        libc::syscall(
+            libc::SYS_execveat,
+            memfd.as_raw_fd(),
+            c"".as_ptr(),
+            argv.as_ptr(),
+            environ,
+            libc::AT_EMPTY_PATH,
+        );
+    }
+    Err(io::Error::last_os_error())
 }
 
 #[cfg(target_os = "windows")]

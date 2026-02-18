@@ -48,12 +48,20 @@ for t in "${ALL_STUBS[@]}"; do
     [[ "$t" == *windows* ]] && STUB_FILE="stub.exe"
     STUB_PATH="target/$t/release/$STUB_FILE"
 
-    # Try UPX compression (may not work for all formats)
-    if upx --best --lzma "$STUB_PATH" 2>/dev/null; then
-      echo "   UPX compressed $STUB_FILE"
-    else
-      echo "   UPX skipped for $t (unsupported format)"
-    fi
+    # UPX compression — skip for musl targets (UPX in-process decompression
+    # preserves stale AT_BASE in auxv, causing musl to exit 127)
+    case "$t" in
+      *linux-musl*)
+        echo "   UPX skipped for $t (musl AT_BASE incompatibility)"
+        ;;
+      *)
+        if upx --best --lzma "$STUB_PATH" 2>/dev/null; then
+          echo "   UPX compressed $STUB_FILE"
+        else
+          echo "   UPX skipped for $t (unsupported format)"
+        fi
+        ;;
+    esac
 
     mkdir -p "$STUBS_DIR/$t"
     cp -f "$STUB_PATH" "$STUBS_DIR/$t/$STUB_FILE"
