@@ -26,7 +26,7 @@ version = "0.1"
 optional = true
 
 [profile.release]
-opt-level = "z"        # Optimize for size ('s' is also possible)
+opt-level = "z"        # Optimize for size
 lto = true             # Enable Link Time Optimization
 codegen-units = 1      # Better optimization across crates
 panic = "abort"        # Removes unwinding code
