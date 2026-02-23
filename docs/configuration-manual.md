@@ -17,7 +17,7 @@ xsfx has no runtime configuration. All settings are applied at build time.
 
 | Feature            | Default | Description                                   |
 |--------------------|---------|-----------------------------------------------|
-| `native-compress`  | Off     | Use liblzma via xz2 for ultra compression (LZMA2 extreme preset 9 + x86 BCJ filter + 64 MiB dictionary). Produces smaller payloads. Requires `liblzma-dev` on Linux. The stub always uses pure-Rust lzma-rs regardless. |
+| `native-compress`  | Off     | Use liblzma via xz2 for ultra compression (LZMA2 extreme preset 9, 64 MiB dictionary). Produces smaller payloads. Requires `liblzma-dev` on Linux. The stub always uses pure-Rust lzma-rs regardless. |
 
 ### Release Profile
 
@@ -41,18 +41,41 @@ The stub uses a multi-stage minification pipeline to stay under 100 KB:
 | 2. Immediate abort | `-Cpanic=immediate-abort` | Eliminates all panic formatting machinery |
 | 3. Format removal | No `eprintln!`/`format!` in stub code | Avoids pulling in `core::fmt` infrastructure |
 | 4. UPX compression | `upx --best --lzma` post-build | LZMA-compressed executable with tiny decompressor header |
+| 4a. xstrip (musl only) | `xstrip -i` post-build | ELF dead-code removal for musl stubs where UPX is skipped |
 
 Result: ~170 KB pre-UPX -> ~77 KB post-UPX (Windows x64).
+
+UPX is skipped for `*-linux-musl` stubs (see SDD-004). Instead, xstrip
+is applied for ELF-level dead code removal. For musl targets, a two-stage
+SFX format can also be used for further size reduction (see below).
+
+### Two-Stage SFX Pipeline (musl)
+
+For `*-linux-musl` targets where UPX cannot be used, a two-stage format
+wraps the entire traditional SFX inside a tiny nostd loader:
+
+| Stage | Component | Size | Description |
+|-------|-----------|------|-------------|
+| 0 | stage0 loader | ~10 KB | `#![no_std]`, raw syscalls, custom RFC 1951 inflate |
+| 1 | stub + xz(payload) + trailer | ~96 KB + payload | Standard SFX, deflate-compressed inside stage0 |
+
+The stage0 loader reads its own trailer, inflates the stage1 SFX from
+a deflate stream into a memfd, and execveat's it. The stub opens itself
+via `/proc/self/exe` (which the kernel resolves to the memfd).
+
+Result: ~122 KB traditional -> ~73 KB two-stage (40% reduction, hello-world payload).
 
 ## Platform-specific Behavior
 
 | Platform | Execution Strategy | Mechanism | Static Linking |
 |----------|-------------------|-----------|----------------|
-| Linux    | memfd_create (in-memory) | Anonymous memory fd via syscall | musl libc |
+| Linux    | memfd_create (in-memory) | Anonymous memory fd + execveat(AT_EMPTY_PATH) | musl libc |
 | Windows  | In-process PE loading | VirtualAlloc + import resolution + relocation fixing | crt-static |
 | macOS    | NSObjectFileImage (in-memory) | Patch MH_EXECUTE to MH_BUNDLE, load via dyld API | System frameworks |
 
-No temp files are used on any platform.
+No temp files are used on any platform. On Linux, the stub opens its own
+executable via `/proc/self/exe` directly (not `current_exe()`) so that it
+works when running from a memfd (two-stage SFX).
 
 ## Compression Settings
 
@@ -64,7 +87,7 @@ No temp files are used on any platform.
 | Dictionary | 64 MiB (capped to input size) | Larger dictionary = better compression for large files |
 | Match finder | BinaryTree4 | Best compression ratio |
 | Nice length | 273 | Maximum match length |
-| Pre-filter | x86 BCJ | Improves compression of x86/x64 executables |
+| Pre-filter | None | BCJ removed — lzma-rs only supports LZMA2 filter |
 | Check | CRC-64 | Integrity verification |
 
 ### Packer (without `native-compress`)
@@ -90,7 +113,7 @@ All targets are built from a single Linux Docker container (`Dockerfile`, stage 
 | Windows MSVC (x64/arm64) | clang-cl + lld-link + xwin SDK |
 
 Build pipeline: `./build.sh` builds the Docker image then runs the entrypoint
-which cross-compiles all stubs (nightly + build-std + UPX) and all packers.
+which cross-compiles all stubs (nightly + build-std + UPX/xstrip) and all packers.
 
 ## CI Configuration
 

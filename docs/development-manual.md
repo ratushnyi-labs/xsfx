@@ -72,7 +72,7 @@ The stub uses platform-specific in-memory execution on all platforms:
 
 | Platform | Strategy | Mechanism |
 |----------|----------|-----------|
-| Linux | memfd_create | Anonymous in-memory file via syscall, executed via /proc/self/fd |
+| Linux | memfd_create | Anonymous in-memory file via syscall, executed via execveat(AT_EMPTY_PATH) |
 | Windows | In-process PE loading | Parse PE headers, VirtualAlloc, map sections, resolve imports, call entry point |
 | macOS | NSObjectFileImage API | Patch MH_EXECUTE to MH_BUNDLE, load via NSCreateObjectFileImageFromMemory |
 
@@ -116,6 +116,50 @@ cargo clippy --lib --tests -- -D warnings
 cargo audit
 ```
 
+## Two-Stage SFX (musl minification PoC)
+
+The `.dev-temp/xstrip-test/` directory contains a proof-of-concept for a
+two-stage SFX format that reduces musl SFX size by ~40%. See SDD-007 for
+full details.
+
+### Components
+
+| Component | Path | Description |
+|-----------|------|-------------|
+| stage0 | `.dev-temp/xstrip-test/stage0/` | nostd loader (~10 KB), custom inflate, raw syscalls |
+| assembler | `.dev-temp/xstrip-test/assembler/` | Test tool: assembles stage1 and two-stage SFX |
+| Dockerfile | `.dev-temp/xstrip-test/Dockerfile` | Builds everything, runs functional tests |
+
+### Running the PoC
+
+From the `neemle/` parent directory (Docker context):
+
+```bash
+docker build \
+  --build-arg EXTRA_CA_CERTS="$(cat ~/zscaler.crt)" \
+  -f xsfx/.dev-temp/xstrip-test/Dockerfile \
+  --target test -t xstrip-stage0-test .
+```
+
+This builds stage0 (nostd), the real stub (nightly+build-std), xstrip,
+the assembler, and a hello-world payload. It then tests all four SFX
+variants (original, xstrip'd, two-stage original, two-stage xstrip'd)
+and prints a comparison report.
+
+### Architecture
+
+```text
+Two-stage SFX layout:
+[stage0 ~10KB] [deflate(stage1_sfx)] [trailer 24B]
+                     |
+                     v
+              [stub ~96KB] [xz(payload)] [trailer 16B]
+```
+
+Stage0 reads itself, inflates stage1 into a memfd, execveat's it.
+Stage1 (the normal stub) opens itself via `/proc/self/exe` (works
+for memfds), decompresses the XZ payload, and execveat's the payload.
+
 ## Cross-Compilation
 
 See `.github/workflows/ci.yml` for the full target matrix. Key targets:
@@ -131,6 +175,17 @@ See `.github/workflows/ci.yml` for the full target matrix. Key targets:
 | `aarch64-pc-windows-msvc`    | Windows | `aarch64-pc-windows-msvc`       | native-compress    |
 
 Linux stubs always use musl for static linking. Windows stubs use `crt-static`.
+
+### Post-Build Stub Processing
+
+| Target | Tool | Effect |
+|--------|------|--------|
+| Non-musl | UPX `--best --lzma` | LZMA-compressed executable (~55% reduction) |
+| `*-linux-musl` | xstrip `-i` | ELF dead-code removal (minimal on LTO builds) |
+
+UPX is skipped for musl stubs (AT_BASE incompatibility). xstrip
+([ratushnyi-labs/xstrip](https://github.com/ratushnyi-labs/xstrip)) is
+applied instead for ELF-level analysis and dead code removal.
 
 Cross-compilation requires the appropriate linker and target installed:
 

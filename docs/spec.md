@@ -91,12 +91,14 @@ flowchart TD
 
 **Description:** The stub reads the 16-byte trailer from the end of its own
 executable. It validates the magic marker, reads the compressed payload, decompresses
-it, and executes it in-memory using a platform-specific strategy: memfd_create on
-Linux, in-process PE loading on Windows, NSCreateObjectFileImageFromMemory on macOS.
-No temp files are used on any platform.
+it, and executes it in-memory using a platform-specific strategy: memfd_create +
+execveat on Linux, in-process PE loading on Windows, NSCreateObjectFileImageFromMemory
+on macOS. No temp files are used on any platform. On Linux, the stub opens itself
+via `/proc/self/exe` directly so it works both from disk and from a memfd (two-stage
+SFX, see BR-015).
 
 **Related BR/WF:** BR-001, BR-002, BR-005, BR-006, BR-008, BR-009, BR-010, BR-011,
-BR-012, WF-002
+BR-012, BR-015, WF-002
 
 **Flow (Mermaid):**
 
@@ -202,6 +204,13 @@ sets up a fresh stack, auxiliary vector, and process image. No fork, no
 temp files. The fresh auxv is required for musl-linked payloads which use
 AT_BASE to determine their role (main program vs dynamic linker).
 
+The stub MUST open its own executable via `/proc/self/exe` directly (not
+by resolving the symlink path with `current_exe()`). When the stub runs
+from a memfd (e.g. two-stage SFX), `readlink("/proc/self/exe")` returns
+a virtual path like `/memfd:s (deleted)` that cannot be opened via the
+filesystem. Opening `/proc/self/exe` as a file works because the kernel
+follows the symlink to the underlying file descriptor, even for memfds.
+
 ### BR-007: Reserved
 
 (Removed -- temp files eliminated on all platforms.)
@@ -247,7 +256,35 @@ pipeline uses nightly Rust with `-Z build-std=std,panic_abort` and
 --lzma` compression for supported targets. UPX is skipped for
 `*-linux-musl` stubs because UPX's in-process decompression (mmap MAP_FIXED
 + jump) preserves a stale AT_BASE in the auxiliary vector, causing musl's
-startup to misidentify the binary as a dynamic linker and exit 127.
+startup to misidentify the binary as a dynamic linker and exit 127. For
+musl stubs, xstrip is applied instead for ELF-level dead code removal.
+
+### BR-015: Two-Stage SFX Format (musl)
+
+For `*-linux-musl` targets, the SFX MAY use a two-stage format to reduce
+total size. The format is:
+
+```text
++-----------------------------+
+| stage0 loader (~10 KB)      |  nostd, raw syscalls, custom inflate
++-----------------------------+
+| deflate(stage1_sfx)         |  deflate-compressed traditional SFX
++-----------------------------+
+| stage0 trailer (24 bytes)   |  compressed_len + uncompressed_len + magic
++-----------------------------+
+```
+
+Stage0 is a `#![no_std]` `#![no_main]` Rust binary with zero dependencies,
+raw x86_64 Linux syscalls via inline assembly, and a custom RFC 1951
+inflate implementation. It reads its own trailer, inflates the stage1 SFX
+into a memfd, and execveat's it. Stage0 trailer magic: `0x5346585F53543021`
+("SFX_ST0!").
+
+Stage1 is the standard SFX (BR-001): `[stub][xz(payload)][trailer(16)]`.
+It runs from the memfd and opens itself via `/proc/self/exe` (BR-006).
+
+This achieves ~40% size reduction over the traditional format by
+deflate-compressing the 96 KB musl stub through a 10 KB loader.
 
 ### BR-014: Ultra Payload Compression
 
@@ -272,7 +309,7 @@ by the stub) only supports the LZMA2 filter (ID 0x21). The stub decompressor
 
 ### WF-002: Extraction/Execution Workflow
 
-1. Determine own executable path
+1. Open own executable via `/proc/self/exe` (Linux) or `current_exe()` (other)
 2. Read trailer from last 16 bytes (BR-002)
 3. Validate magic marker
 4. Validate payload length against file size

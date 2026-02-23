@@ -14,6 +14,13 @@ fn main() {
 
 fn run_stub() -> io::Result<()> {
     let exe_path = env::current_exe()?;
+    // Open /proc/self/exe directly on Linux so the kernel follows
+    // the symlink to the underlying file — works for memfd-backed
+    // processes (two-stage SFX) where the resolved path string
+    // (e.g. "/memfd:s (deleted)") is not a valid filesystem path.
+    #[cfg(target_os = "linux")]
+    let mut file = std::fs::File::open("/proc/self/exe")?;
+    #[cfg(not(target_os = "linux"))]
     let mut file = std::fs::File::open(&exe_path)?;
     let meta = file.metadata()?;
     let total_len = meta.len();

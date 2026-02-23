@@ -150,6 +150,12 @@ RUN set -euo pipefail \
     && curl -sSfL "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" \
         | tar xJf - -C /usr/local/bin --strip-components=1 "upx-${UPX_VERSION}-amd64_linux/upx"
 
+# xstrip for ELF dead-code removal (musl stubs where UPX cannot be used)
+RUN set -euo pipefail \
+    && XSTRIP_VERSION=0.1.0 \
+    && curl -sSfL "https://github.com/ratushnyi-labs/xstrip/releases/download/v${XSTRIP_VERSION}/xstrip-linux-amd64.tar.gz" \
+        | tar xzf - -C /usr/local/bin
+
 # Cargo configuration for cross-linkers
 RUN mkdir -p /usr/local/cargo && \
     echo '[http]' > /usr/local/cargo/config.toml && \
