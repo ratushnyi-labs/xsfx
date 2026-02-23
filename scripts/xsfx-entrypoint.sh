@@ -60,6 +60,11 @@ for t in "${ALL_STUBS[@]}"; do
     case "$t" in
       *linux-musl*)
         echo "   UPX skipped for $t (musl AT_BASE incompatibility)"
+        if xstrip -i "$STUB_PATH" 2>/dev/null; then
+          echo "   xstrip applied to $STUB_FILE"
+        else
+          echo "   xstrip skipped for $t (unsupported or no dead code)"
+        fi
         ;;
       *)
         if upx --best --lzma "$STUB_PATH" 2>/dev/null; then
