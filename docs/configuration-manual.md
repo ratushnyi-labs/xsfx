@@ -119,28 +119,17 @@ The Docker cross-build stage (`rust:1.93.1-bookworm`) includes:
 
 ## 8. CI Pipeline
 
-### Test Job (ci.yml)
+### CI Pipeline (ci.yml)
 
-Runs `docker compose run --build test` on every push to main/master and all PRs.
+Triggered on push to main/master/feat/** and all PRs. Four parallel/sequential phases:
 
-Fail-fast order:
-1. Format check (`cargo fmt`)
-2. Lint (`cargo clippy -D warnings`)
-3. Coverage (100% lines + functions + regions, excluding `bin/`)
-4. Security audit (`cargo audit`)
+1. **test** — `docker compose run --build test` (fmt, clippy, coverage 100%, audit)
+2. **stubs** (9 parallel matrix jobs) — builds one stub per target on native OS runners using nightly + build-std + UPX/xstrip. Runs in parallel with test.
+3. **packers** (9 parallel matrix jobs, needs stubs) — downloads all stub artifacts, builds one packer per target embedding all stubs.
+4. **self-compress** (needs packers) — uses the Linux x86_64 packer to self-compress all packer binaries via xsfx.
 
-### Build Job (ci.yml)
-
-Depends on test job passing. Cross-builds all 9 targets with 120-minute timeout.
-
-Docker image caching: SHA256 of `Dockerfile` + `scripts/xsfx-entrypoint.sh` used as cache key, stored in `ghcr.io`.
-
-Artifacts uploaded with 7-day retention.
+Each matrix job uses native runners (ubuntu/macos/windows) — no heavyweight Docker cross-compilation image needed in CI. Linux cross-targets use `cargo-zigbuild`.
 
 ### Release (release.yml)
 
-Triggered on `v*` tags. Same cross-build process, then packages:
-- Unix targets → `.tar.gz`
-- Windows targets → `.zip`
-
-Creates GitHub Release with auto-generated notes.
+Triggered on `v*` tags. Same 4-phase pipeline, plus a final **release** job (needs test + self-compress) that packages artifacts (.tar.gz/.zip) and creates a GitHub Release with auto-generated notes.

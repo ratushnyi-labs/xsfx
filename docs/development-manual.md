@@ -125,7 +125,23 @@ Tests are organized as:
 - **Integration tests:** `tests/integration.rs` (SFX format assembly, roundtrip, edge cases)
 - **Security tests:** labeled `test_sec_ucXXX_*` covering adversarial inputs, memory leaks, corruption, boundary values
 
-Coverage is enforced at 100% for lines, functions, and regions (excluding `bin/` targets).
+Coverage is enforced at 100% for lines and functions (excluding `bin/` targets).
+
+## 6.1 CI Pipeline
+
+The CI uses a matrix strategy for maximum parallelism:
+
+```
+test (Docker)
+stubs (9 parallel) → packers (9 parallel) → self-compress
+```
+
+- **test**: fmt + clippy + coverage + audit in Docker
+- **stubs**: each target builds on a native OS runner (nightly + build-std + UPX/xstrip)
+- **packers**: each target downloads all stubs and builds one packer on a native runner
+- **self-compress**: uses xsfx to pack itself for smaller distribution
+
+No heavyweight Docker cross-compilation image is used in CI — native runners + `cargo-zigbuild` for Linux cross-targets.
 
 ## 7. Two-Stage SFX (Proof of Concept)
 

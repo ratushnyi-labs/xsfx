@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary
+*.tar binary
+*.crt binary

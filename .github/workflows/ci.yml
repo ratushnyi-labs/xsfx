@@ -2,73 +2,265 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "feat/**"]
   pull_request:
 
 jobs:
   test:
-    name: test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker compose run --build --rm test
 
-      - name: Run dockerized tests
-        run: docker compose run --build test
+  stubs:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: none
+            post: upx
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: zig
+            post: upx
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig
+            post: xstrip
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig
+            post: xstrip
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: none
+            post: upx
+          - target: aarch64-apple-darwin
+            os: macos-14
+            cross: none
+            post: upx
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            cross: mingw
+            post: upx
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: none
+            post: upx
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: none
+            post: upx
 
-  build:
-    name: cross-build
-    needs: [test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      packages: write
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Compute cross image cache key
-        id: cache-key
-        run: |
-          HASH=$(cat Dockerfile scripts/xsfx-entrypoint.sh | sha256sum | cut -c1-16)
-          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${{ github.repository }}/cross-cache:$HASH" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          targets: ${{ matrix.target }}
+          components: rust-src
 
-      - name: Pull cached cross image
-        id: cache
-        continue-on-error: true
+      - if: matrix.cross == 'zig'
+        uses: mlugg/setup-zig@v2
+      - if: matrix.cross == 'zig'
+        uses: taiki-e/install-action@cargo-zigbuild
+      - if: matrix.cross == 'mingw'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - name: Build stub
+        shell: bash
         run: |
-          if docker pull "${{ steps.cache-key.outputs.image }}"; then
-            docker tag "${{ steps.cache-key.outputs.image }}" xsfx-build
-            echo "hit=true" >> "$GITHUB_OUTPUT"
+          RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort"
+          case "${{ matrix.target }}" in
+            x86_64*linux-musl*)  RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static -C linker=cc" ;;
+            aarch64*linux-musl*) RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static" ;;
+            *windows*)           RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static" ;;
+          esac
+          export RUSTFLAGS XSFX_SKIP_STUB_BUILD=1
+
+          if [[ "${{ matrix.cross }}" == "zig" ]]; then
+            cargo zigbuild --no-default-features \
+              -Z build-std=std,panic_abort \
+              --release --bin stub --target ${{ matrix.target }}
           else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
+            cargo +nightly build --no-default-features \
+              -Z build-std=std,panic_abort \
+              --release --bin stub --target ${{ matrix.target }}
           fi
 
-      - name: Build all targets
-        run: ./build.sh
+      - if: matrix.post == 'upx' && runner.os == 'Linux'
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          install-only: true
+      - if: matrix.post == 'upx' && runner.os == 'macOS'
+        run: brew install upx
+      - if: matrix.post == 'upx' && runner.os == 'Windows'
+        run: choco install upx -y
 
-      - name: Push cross image to cache
-        if: steps.cache.outputs.hit != 'true'
-        continue-on-error: true
+      - name: Post-process stub
+        shell: bash
         run: |
-          docker tag xsfx-build "${{ steps.cache-key.outputs.image }}"
-          docker push "${{ steps.cache-key.outputs.image }}"
+          STUB="stub"
+          [[ "${{ matrix.target }}" == *windows* ]] && STUB="stub.exe"
+          STUB_PATH="target/${{ matrix.target }}/release/$STUB"
 
-      - name: List artifacts
-        run: ls -lh dist/
+          if [[ "${{ matrix.post }}" == "upx" ]]; then
+            upx --best --lzma "$STUB_PATH" || echo "UPX skipped"
+          elif [[ "${{ matrix.post }}" == "xstrip" ]]; then
+            curl -sSfL "https://github.com/ratushnyi-labs/xstrip/releases/download/v0.1.0/xstrip-linux-amd64.tar.gz" \
+              | sudo tar xzf - -C /usr/local/bin 2>/dev/null || true
+            xstrip -i "$STUB_PATH" 2>/dev/null || echo "xstrip skipped"
+          fi
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          mkdir -p "stub-out/${{ matrix.target }}"
+          cp "$STUB_PATH" "stub-out/${{ matrix.target }}/$STUB"
+          SIZE=$(wc -c < "stub-out/${{ matrix.target }}/$STUB" | tr -d ' ')
+          echo "Stub ${{ matrix.target }}: $SIZE bytes"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stub-${{ matrix.target }}
+          path: stub-out/
+          retention-days: 1
+
+  packers:
+    needs: [stubs]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: none
+            ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: zig
+            ext: ""
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig
+            ext: ""
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig
+            ext: ""
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: none
+            ext: ""
+          - target: aarch64-apple-darwin
+            os: macos-14
+            cross: none
+            ext: ""
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            cross: mingw
+            ext: ".exe"
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: none
+            ext: ".exe"
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: none
+            ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - if: matrix.cross == 'zig'
+        uses: mlugg/setup-zig@v2
+      - if: matrix.cross == 'zig'
+        uses: taiki-e/install-action@cargo-zigbuild
+      - if: matrix.cross == 'mingw'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: stubs
+          pattern: stub-*
+          merge-multiple: true
+
+      - name: Build packer
+        shell: bash
+        run: |
+          export XSFX_PREBUILT_STUBS_DIR="$(pwd)/stubs"
+          export XSFX_TARGETS="x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-pc-windows-gnu,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc"
+
+          if [[ "${{ matrix.cross }}" == "zig" ]]; then
+            cargo zigbuild --release --bin xsfx --target ${{ matrix.target }} --features native-compress
+          else
+            cargo build --release --bin xsfx --target ${{ matrix.target }} --features native-compress
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          SRC="target/${{ matrix.target }}/release/xsfx${{ matrix.ext }}"
+          DEST="xsfx-${{ matrix.target }}${{ matrix.ext }}"
+          cp "$SRC" "$DEST"
+          [[ -z "${{ matrix.ext }}" ]] && chmod +x "$DEST"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xsfx-${{ matrix.target }}
+          path: xsfx-${{ matrix.target }}*
+          retention-days: 7
+
+  self-compress:
+    needs: [packers]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: xsfx-*
+          merge-multiple: true
+
+      - name: Self-compress with xsfx
+        run: |
+          chmod +x dist/xsfx-x86_64-unknown-linux-gnu
+          XSFX="$(pwd)/dist/xsfx-x86_64-unknown-linux-gnu"
+
+          mkdir -p compressed
+          for f in dist/xsfx-*; do
+            [ -f "$f" ] || continue
+            NAME=$(basename "$f")
+            TARGET="${NAME#xsfx-}"
+
+            # Determine the --target triple from the filename
+            case "$TARGET" in
+              *.exe) TRIPLE="${TARGET%.exe}" ;;
+              *)     TRIPLE="$TARGET" ;;
+            esac
+
+            echo "==> Self-compressing $NAME (target: $TRIPLE)"
+            "$XSFX" "$f" "compressed/$NAME" --target "$TRIPLE" || {
+              echo "   Skipped (self-compress failed for $TRIPLE)"
+              cp "$f" "compressed/$NAME"
+            }
+
+            ORIG=$(wc -c < "$f" | tr -d ' ')
+            COMP=$(wc -c < "compressed/$NAME" | tr -d ' ')
+            echo "   $ORIG -> $COMP bytes"
+          done
+
+          echo ""
+          echo "=== Self-compression summary ==="
+          ls -lh compressed/
+
+      - uses: actions/upload-artifact@v4
         with:
           name: xsfx-all-targets
-          path: dist/
-          retention-days: 7
+          path: compressed/
+          retention-days: 30
