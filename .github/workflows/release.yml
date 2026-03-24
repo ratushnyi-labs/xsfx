@@ -195,11 +195,13 @@ jobs:
           pattern: xsfx-*
           merge-multiple: true
 
-      - name: Self-compress with xsfx
+      - name: Self-compress all artifacts
         run: |
           chmod +x dist/xsfx-x86_64-unknown-linux-musl
           XSFX="$(pwd)/dist/xsfx-x86_64-unknown-linux-musl"
 
+          EXPECTED=6
+          COUNT=0
           mkdir -p compressed
           for f in dist/xsfx-*; do
             [ -f "$f" ] || continue
@@ -210,12 +212,23 @@ jobs:
               *)     TRIPLE="$TARGET" ;;
             esac
 
-            "$XSFX" "$f" "compressed/$NAME" --target "$TRIPLE" || {
-              echo "Skipped self-compress for $TRIPLE"
-              cp "$f" "compressed/$NAME"
-            }
+            echo "==> Self-compressing $NAME (target: $TRIPLE)"
+            "$XSFX" "$f" "compressed/$NAME" --target "$TRIPLE"
+
+            ORIG=$(wc -c < "$f" | tr -d ' ')
+            COMP=$(wc -c < "compressed/$NAME" | tr -d ' ')
+            echo "   $ORIG -> $COMP bytes"
+            COUNT=$((COUNT + 1))
           done
+
+          echo ""
+          echo "=== Self-compression summary ($COUNT/$EXPECTED) ==="
           ls -lh compressed/
+
+          if [ "$COUNT" -ne "$EXPECTED" ]; then
+            echo "ERROR: Expected $EXPECTED artifacts, got $COUNT"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
