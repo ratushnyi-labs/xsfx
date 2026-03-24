@@ -108,6 +108,15 @@ XSFX_SKIP_STUB_BUILD=1 cargo test --lib --test integration
 - [`docs/installation-manual.md`](docs/installation-manual.md) — Installation
 - [`docs/configuration-manual.md`](docs/configuration-manual.md) — Configuration
 
+### User Manual
+
+- [English](docs/user-manual-en.md)
+- [Українська](docs/user-manual-ua.md)
+- [Español](docs/user-manual-es.md)
+- [Français](docs/user-manual-fr.md)
+- [Italiano](docs/user-manual-it.md)
+- [Português](docs/user-manual-pt.md)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
